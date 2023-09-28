@@ -23,6 +23,8 @@ interface WaypointSettings {
 	useWikiLinks: boolean;
 	showEnclosingNote: boolean;
 	folderNoteType: string;
+	ignoredFolders: string[];
+	root: string;
 }
 
 const DEFAULT_SETTINGS: WaypointSettings = {
@@ -34,6 +36,8 @@ const DEFAULT_SETTINGS: WaypointSettings = {
 	useWikiLinks: true,
 	showEnclosingNote: false,
 	folderNoteType: FolderNoteType.InsideFolder,
+	ignoredFolders: ["Templates"],
+	root: null,
 };
 
 export default class Waypoint extends Plugin {
@@ -82,6 +86,21 @@ export default class Waypoint extends Plugin {
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new WaypointSettingsTab(this.app, this));
+
+		// Add in a hotkey to update the waypoint
+		this.addCommand({
+			id: "update-waypoint",
+			name: "Update waypoint in current file",
+			hotkeys: [
+				{
+					modifiers: ["Ctrl"],
+					key: "w",
+				},
+			],
+			callback: () => {
+				this.updateWaypoint(this.app.workspace.getActiveFile());
+			},
+		});
 	}
 
 	onunload() {}
@@ -108,10 +127,9 @@ export default class Waypoint extends Plugin {
 					return;
 				} else if (file.parent.isRoot()) {
 					this.log("Found waypoint flag in root folder.");
-					this.printWaypointError(
-						file,
-						`%% Error: Cannot create a waypoint in the root folder of your vault. For more information, check the instructions [here](https://github.com/IdreesInc/Waypoint) %%`
-					);
+					this.settings.root = file.name;
+					await this.saveSettings();
+					await this.updateWaypoint(file);
 					return;
 				} else {
 					this.log("Found waypoint flag in invalid note.");
@@ -201,6 +219,12 @@ export default class Waypoint extends Plugin {
 				);
 			}
 		}
+		if (file.parent.isRoot()) {
+			const splitFileTree = fileTree.split("\n");
+			fileTree = `- **[[${file.basename}]]**\n${splitFileTree
+				.slice(1)
+				.join("\n")}`;
+		}
 		const waypoint = `${Waypoint.BEGIN_WAYPOINT}\n${fileTree}\n\n${Waypoint.END_WAYPOINT}`;
 		const text = await this.app.vault.read(file);
 		const lines: string[] = text.split("\n");
@@ -255,7 +279,8 @@ export default class Waypoint extends Plugin {
 		if (node instanceof TFile) {
 			console.log(node);
 			// Print the file name
-			if (node.extension == "md") {
+			// Check for the parent being the root because otherwise the "root note" would be included in the tree
+			if (node.extension == "md" && !node.parent.isRoot()) {
 				if (this.settings.useWikiLinks) {
 					return `${bullet} [[${node.basename}]]`;
 				} else {
@@ -276,6 +301,9 @@ export default class Waypoint extends Plugin {
 			}
 			return null;
 		} else if (node instanceof TFolder) {
+			if (this.settings.ignoredFolders.includes(node.path)) {
+				return null;
+			}
 			let text = "";
 			if (!topLevel || this.settings.showEnclosingNote) {
 				// Print the folder name
@@ -447,33 +475,56 @@ export default class Waypoint extends Plugin {
 	): Promise<TFile> {
 		this.log("Locating parent waypoint of " + node.name);
 		let folder = includeCurrentNode ? node : node.parent;
-		while (folder) {
-			let folderNote;
-			if (this.settings.folderNoteType === FolderNoteType.InsideFolder) {
-				folderNote = this.app.vault.getAbstractFileByPath(
-					folder.path + "/" + folder.name + ".md"
-				);
-			} else if (
-				this.settings.folderNoteType === FolderNoteType.OutsideFolder
-			) {
-				if (folder.parent) {
-					folderNote = this.app.vault.getAbstractFileByPath(
-						this.getCleanParentPath(folder) + folder.name + ".md"
-					);
-				}
-			}
-			if (folderNote instanceof TFile) {
-				this.log("Found folder note: " + folderNote.path);
-				const text = await this.app.vault.cachedRead(folderNote);
+		// When there's a root-level folder note
+		if (node.parent.isRoot() && this.settings.root !== null) {
+			const file = this.app.vault.getAbstractFileByPath(
+				this.settings.root
+			);
+			if (file instanceof TFile) {
+				this.log("Found folder note: " + file.path);
+				const text = await this.app.vault.cachedRead(file);
 				if (
 					text.includes(Waypoint.BEGIN_WAYPOINT) ||
 					text.includes(this.settings.waypointFlag)
 				) {
 					this.log("Found parent waypoint!");
-					return folderNote;
+					return file;
 				}
 			}
-			folder = folder.parent;
+		} else {
+			while (folder) {
+				let folderNote;
+				if (
+					this.settings.folderNoteType === FolderNoteType.InsideFolder
+				) {
+					folderNote = this.app.vault.getAbstractFileByPath(
+						folder.path + "/" + folder.name + ".md"
+					);
+				} else if (
+					this.settings.folderNoteType ===
+					FolderNoteType.OutsideFolder
+				) {
+					if (folder.parent) {
+						folderNote = this.app.vault.getAbstractFileByPath(
+							this.getCleanParentPath(folder) +
+								folder.name +
+								".md"
+						);
+					}
+				}
+				if (folderNote instanceof TFile) {
+					this.log("Found folder note: " + folderNote.path);
+					const text = await this.app.vault.cachedRead(folderNote);
+					if (
+						text.includes(Waypoint.BEGIN_WAYPOINT) ||
+						text.includes(this.settings.waypointFlag)
+					) {
+						this.log("Found parent waypoint!");
+						return folderNote;
+					}
+				}
+				folder = folder.parent;
+			}
 		}
 		this.log("No parent waypoint found.");
 		return null;
@@ -637,6 +688,45 @@ class WaypointSettingsTab extends PluginSettingTab {
 							);
 						}
 						await this.plugin.saveSettings();
+					})
+			);
+		new Setting(containerEl)
+			.setName("Ignored folders")
+			.setDesc("Folders that Waypoint should ignore")
+			.addText((text) =>
+				text
+					.setPlaceholder(DEFAULT_SETTINGS.ignoredFolders.join(","))
+					.setValue(this.plugin.settings.ignoredFolders.join(", "))
+					.onChange(async (value) => {
+						const previous = this.plugin.settings.ignoredFolders;
+						this.plugin.settings.ignoredFolders =
+							value.split(/\s*,\s*/);
+						await this.plugin.saveSettings();
+
+						// Get a list of all new and old folders that need updating
+						const allFolders = [
+							...new Set([
+								...previous,
+								...this.plugin.settings.ignoredFolders,
+							]),
+						];
+
+						// Trigger updates in order to remove those folders from existing waypoints
+						for (let i = 0; i < allFolders.length; i++) {
+							const file = this.app.vault.getAbstractFileByPath(
+								allFolders[i]
+							);
+							if (file === null) {
+								continue;
+							}
+							await this.plugin
+								.locateParentWaypoint(file, false)
+								.then((file) => {
+									if (file !== null) {
+										this.plugin.updateWaypoint(file);
+									}
+								});
+						}
 					})
 			);
 		const postscriptElement = containerEl.createEl("div", {
