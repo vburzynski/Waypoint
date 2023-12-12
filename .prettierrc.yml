@@ -1,0 +1,32 @@
+---
+endOfLine: lf
+
+# Specify the line length that the printer will wrap on.
+# 120 matches Rubocop defaults
+printWidth: 120
+
+# Specify the number of spaces per indentation-level.
+tabWidth: 2
+
+# Don't indent lines with tabs instead of spaces.
+useTabs: false
+
+# add a semicolon at the end of every line
+semi: true
+
+# Only add quotes around object properties where required.
+quoteProps: as-needed
+
+# Print spaces between brackets in object literals.
+# It's easier to read and parse
+bracketSpacing: true
+
+# Print trailing commas wherever possible.
+# - "none" no trailing commas
+# - "es5" trailing commas where valid in ES5 (objects, arrays, etc)
+# - "all" trailing commas wherever possible (function arguments)
+trailingComma: es5
+
+# Include parentheses around a sole arrow function parameter.
+arrowParens: always
+

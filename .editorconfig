@@ -1,9 +1,14 @@
-# top-most EditorConfig file
+# editorconfig.org
 root = true
 
 [*]
 charset = utf-8
+end_of_line = lf
+indent_size = 2
+indent_style = space
+max_line_length = 120
 insert_final_newline = true
-indent_style = tab
-indent_size = 4
-tab_width = 4
+trim_trailing_whitespace = true
+
+[*.{diff,md,mdx}]
+trim_trailing_whitespace = false
