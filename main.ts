@@ -57,6 +57,22 @@ const DEFAULT_SETTINGS: WaypointSettings = {
   root: null,
 };
 
+function sortWithNaturalOrder(a: TAbstractFile, b: TAbstractFile): number {
+  return a.name.localeCompare(b.name, undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+function sortFoldersFirst(a: TAbstractFile, b: TAbstractFile): number {
+  if (a instanceof TFolder) {
+    // when b is also a folder, sort normally, otherwise a (the folder) comes first
+    return b instanceof TFolder ? sortWithNaturalOrder(a, b) : -1;
+  }
+  // a is a file. When b is a folder, it comes first, otherwise sort both files normally
+  return b instanceof TFolder ? 1 : sortWithNaturalOrder(a, b);
+}
+
 export default class Waypoint extends Plugin {
   static readonly BEGIN_WAYPOINT = "%% Begin Waypoint %%";
   static readonly END_WAYPOINT = "%% End Waypoint %%";
@@ -135,9 +151,10 @@ export default class Waypoint extends Plugin {
     this.log("Modification on " + file.name);
     this.log("Scanning for Waypoint flags...");
     const text = await this.app.vault.cachedRead(file);
+
     const lines: string[] = text.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].trim() === this.settings.waypointFlag) {
+    for (const line of lines) {
+      if (line.trim() === this.settings.waypointFlag) {
         if (this.isFolderNote(file)) {
           this.log("Found waypoint flag in folder note!");
           await this.updateWaypoint(file);
@@ -165,13 +182,25 @@ export default class Waypoint extends Plugin {
   isFolderNote(file: TFile): boolean {
     if (this.settings.folderNoteType === FolderNoteType.InsideFolder) {
       return file.basename == file.parent.name;
-    } else if (this.settings.folderNoteType === FolderNoteType.OutsideFolder) {
-      if (file.parent) {
-        return this.app.vault.getAbstractFileByPath(this.getCleanParentPath(file) + file.basename) instanceof TFolder;
-      }
-      return false;
+    } else if (this.settings.folderNoteType === FolderNoteType.OutsideFolder && file.parent) {
+      return this.getFolderForFile(file) instanceof TFolder;
     }
+    return false;
   }
+
+  getFolderForFile(file: TFile): TAbstractFile {
+    return this.app.vault.getAbstractFileByPath(this.getCleanParentPath(file) + file.basename);
+  }
+
+  getFolderNoteForFolder(folder: TAbstractFile): TAbstractFile {
+    if (this.settings.folderNoteType === FolderNoteType.InsideFolder) {
+      return this.app.vault.getAbstractFileByPath(folder.path + "/" + folder.name + ".md");
+    } else if (this.settings.folderNoteType === FolderNoteType.OutsideFolder && folder.parent) {
+      return this.app.vault.getAbstractFileByPath(this.getCleanParentPath(folder) + folder.name + ".md");
+    }
+    return null;
+  }
+
 
   getCleanParentPath(node: TAbstractFile): string {
     if (node.parent instanceof TFolder && node.parent.isRoot()) {
@@ -184,8 +213,8 @@ export default class Waypoint extends Plugin {
   async printWaypointError(file: TFile, error: string) {
     this.log("Creating waypoint error in " + file.path);
     const text = await this.app.vault.read(file);
-    const lines: string[] = text.split("\n");
     let waypointIndex = -1;
+    const lines: string[] = text.split("\n");
     for (let i = 0; i < lines.length; i++) {
       const trimmed = lines[i].trim();
       if (trimmed === this.settings.waypointFlag) {
@@ -206,21 +235,27 @@ export default class Waypoint extends Plugin {
    */
   async updateWaypoint(file: TFile): Promise<void> {
     this.log("Updating waypoint in " + file.path);
-    let fileTree;
+
+    let folder;
     if (this.settings.folderNoteType === FolderNoteType.InsideFolder) {
-      fileTree = await this.getFileTreeRepresentation(file.parent, file.parent, 0, true);
+      folder = file.parent;
     } else if (this.settings.folderNoteType === FolderNoteType.OutsideFolder) {
-      const folder = this.app.vault.getAbstractFileByPath(this.getCleanParentPath(file) + file.basename);
-      if (folder instanceof TFolder) {
-        fileTree = await this.getFileTreeRepresentation(file.parent, folder, 0, true);
-      }
+      folder = this.getFolderForFile(file);
     }
+
+    let fileTree;
+    if (folder instanceof TFolder) {
+      fileTree = await this.getFileTreeRepresentation(file.parent, folder, 0, true);
+    }
+
     if (file.parent.isRoot()) {
       const splitFileTree = fileTree.split("\n");
       fileTree = `- **[[${file.basename}]]**\n${splitFileTree.slice(1).join("\n")}`;
     }
+
     const waypoint = `${Waypoint.BEGIN_WAYPOINT}\n${fileTree}\n${Waypoint.END_WAYPOINT}`;
     const text = await this.app.vault.read(file);
+
     const lines: string[] = text.split("\n");
     let waypointStart = -1;
     let waypointEnd = -1;
@@ -237,11 +272,13 @@ export default class Waypoint extends Plugin {
       console.error("Error: No waypoint found while trying to update " + file.path);
       return;
     }
+
     this.log("Waypoint found at " + waypointStart + " to " + waypointEnd);
 
     // Get the current waypoint block from lines and join it to form a string
-    const currentWaypoint =
-      waypointEnd !== -1 ? lines.slice(waypointStart, waypointEnd + 1).join("\n") : lines[waypointStart];
+    const currentWaypoint = waypointEnd !== -1
+      ? lines.slice(waypointStart, waypointEnd + 1).join("\n")
+      : lines[waypointStart];
 
     // Only splice and modify if waypoint differs from the current block
     if (currentWaypoint !== waypoint) {
@@ -331,12 +368,13 @@ export default class Waypoint extends Plugin {
             children = children.sort(this.sortWithPriority);
             break;
           case SortType.FoldersFirst:
-            children = children.sort(this.sortFoldersFirst);
+            children = children.sort(sortFoldersFirst);
             break;
           default:
-            children = children.sort(this.sortWithNaturalOrder);
+            children = children.sort(sortWithNaturalOrder);
             break;
         }
+
         if (!this.settings.showFolderNotes) {
           if (this.settings.folderNoteType === FolderNoteType.InsideFolder) {
             children = children.filter((child) => this.settings.showFolderNotes || child.name !== node.name + ".md");
@@ -350,6 +388,7 @@ export default class Waypoint extends Plugin {
             children = children.filter((child) => child instanceof TFolder || !folderNames.has(child.name));
           }
         }
+
         if (children.length > 0) {
           const nextIndentLevel = topLevel && !this.settings.showEnclosingNote ? indentLevel : indentLevel + 1;
           text +=
@@ -434,14 +473,7 @@ export default class Waypoint extends Plugin {
       }
     } else {
       while (folder) {
-        let folderNote;
-        if (this.settings.folderNoteType === FolderNoteType.InsideFolder) {
-          folderNote = this.app.vault.getAbstractFileByPath(folder.path + "/" + folder.name + ".md");
-        } else if (this.settings.folderNoteType === FolderNoteType.OutsideFolder) {
-          if (folder.parent) {
-            folderNote = this.app.vault.getAbstractFileByPath(this.getCleanParentPath(folder) + folder.name + ".md");
-          }
-        }
+        const folderNote = this.getFolderNoteForFolder(folder);
         if (folderNote instanceof TFile) {
           this.log("Found folder note: " + folderNote.path);
           const text = await this.app.vault.cachedRead(folderNote);
@@ -464,11 +496,7 @@ export default class Waypoint extends Plugin {
    */
   getParentFolder(path: string): TFolder {
     const abstractFile = this.app.vault.getAbstractFileByPath(path.split("/").slice(0, -1).join("/"));
-    if (abstractFile instanceof TFolder) {
-      return abstractFile;
-    } else {
-      return null;
-    }
+    return (abstractFile instanceof TFolder) ? abstractFile : null;
   }
 
   log(message?: string | TFile) {
@@ -516,22 +544,6 @@ export default class Waypoint extends Plugin {
     }
   }
 
-  sortWithNaturalOrder = (a: TAbstractFile, b: TAbstractFile): number => {
-    return a.name.localeCompare(b.name, undefined, {
-      numeric: true,
-      sensitivity: "base",
-    });
-  };
-
-  sortFoldersFirst = (a: TAbstractFile, b: TAbstractFile): number => {
-    if (a instanceof TFolder) {
-      // if b is also a folder, sort normally, otherwise a (the folder) comes first
-      return b instanceof TFolder ? this.sortWithNaturalOrder(a, b) : -1;
-    }
-    // a is a file. if b is a folder, it comes first, otherwise sort both files normally
-    return b instanceof TFolder ? 1 : this.sortWithNaturalOrder(a, b);
-  };
-
   sortWithPriority = (a: TAbstractFile, b: TAbstractFile): number => {
     const aPriority = this.getWaypointPriority(a);
     const bPriority = this.getWaypointPriority(b);
@@ -546,7 +558,7 @@ export default class Waypoint extends Plugin {
       return 1;
     } else {
       // If neither has priority, sort alphabetically.
-      return this.sortWithNaturalOrder(a, b);
+      return sortWithNaturalOrder(a, b);
     }
   };
 }
