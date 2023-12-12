@@ -7,6 +7,8 @@ import {
 	TAbstractFile,
 	TFile,
 	TFolder,
+	TextComponent,
+	ToggleComponent,
 } from "obsidian";
 
 enum FolderNoteType {
@@ -23,6 +25,8 @@ interface WaypointSettings {
 	useWikiLinks: boolean;
 	showEnclosingNote: boolean;
 	folderNoteType: string;
+	useSpaces: boolean;
+	numSpaces: number;
 	ignoredFolders: string[];
 	root: string;
 }
@@ -36,6 +40,8 @@ const DEFAULT_SETTINGS: WaypointSettings = {
 	useWikiLinks: true,
 	showEnclosingNote: false,
 	folderNoteType: FolderNoteType.InsideFolder,
+	useSpaces: false,
+	numSpaces: 2,
 	ignoredFolders: ["Templates"],
 	root: null,
 };
@@ -224,8 +230,8 @@ export default class Waypoint extends Plugin {
 			fileTree = `- **[[${file.basename}]]**\n${splitFileTree
 				.slice(1)
 				.join("\n")}`;
-		}
-		const waypoint = `${Waypoint.BEGIN_WAYPOINT}\n${fileTree}\n\n${Waypoint.END_WAYPOINT}`;
+			}
+		const waypoint = `${Waypoint.BEGIN_WAYPOINT}\n${fileTree}\n${Waypoint.END_WAYPOINT}`;
 		const text = await this.app.vault.read(file);
 		const lines: string[] = text.split("\n");
 		let waypointStart = -1;
@@ -275,7 +281,10 @@ export default class Waypoint extends Plugin {
 		indentLevel: number,
 		topLevel = false
 	): Promise<string> | null {
-		const bullet = "	".repeat(indentLevel) + "-";
+		const indent = this.settings.useSpaces
+			? " ".repeat(this.settings.numSpaces)
+			: "	";
+		const bullet = indent.repeat(indentLevel) + "-";
 		if (node instanceof TFile) {
 			console.log(node);
 			// Print the file name
@@ -658,6 +667,35 @@ class WaypointSettingsTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.useWikiLinks)
 					.onChange(async (value) => {
 						this.plugin.settings.useWikiLinks = value;
+						await this.plugin.saveSettings();
+					})
+			);
+		new Setting(containerEl)
+			.setName("Use Spaces for Indentation")
+			.setDesc(
+				"If enabled, the waypoint list will be indented with spaces rather than with tabs."
+			)
+			.addToggle((toggle: ToggleComponent) =>
+				toggle
+					.setValue(this.plugin.settings.useSpaces)
+					.onChange(async (value: boolean) => {
+						this.plugin.settings.useSpaces = value;
+						await this.plugin.saveSettings();
+					})
+			);
+		new Setting(containerEl)
+			.setName("Number of Spaces for Indentation")
+			.setDesc(
+				"If use spaces is enabled, this is the number of spaces that will be used for indentation"
+			)
+			.addText((text: TextComponent) =>
+				text
+					.setPlaceholder("2")
+					.setValue("" + this.plugin.settings.numSpaces)
+					.onChange(async (value: string) => {
+						let num = parseInt(value, 10);
+						if (isNaN(num)) return;
+						this.plugin.settings.numSpaces = num;
 						await this.plugin.saveSettings();
 					})
 			);
